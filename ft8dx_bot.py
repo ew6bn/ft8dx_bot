@@ -40,7 +40,6 @@ CALENDAR_PARSING_MINUTE = 0
 SGA_HOUR = 22
 SGA_MINUTE = 10
 
-# WWV schedule - every 6 hours at 00:10, 06:10, 12:10, 18:10 UTC
 WWV_SCHEDULES = [
     {"hour": 0, "minute": 10},
     {"hour": 6, "minute": 10},
@@ -378,9 +377,12 @@ def extract_callsigns_from_calendar():
             first_line = first_line.replace(' and ', ', ')
             first_line = first_line.replace('(', ',').replace(')', '')
             
-            for part in first_line.split(','):
-                part = part.strip()
-                if part and re.match(r'^[A-Z]{1,2}[0-9][A-Z0-9]{1,5}$', part):
+            parts = [p.strip() for p in first_line.split(',')]
+            
+            for part in parts:
+                if not part:
+                    continue
+                if re.match(r'^[A-Z0-9]{1,2}[0-9][A-Z0-9/]{1,10}$', part):
                     callsigns.add(part)
     
     return callsigns
@@ -439,7 +441,6 @@ def fetch_sga_report():
 
 
 def send_sga_report():
-    """Send full SGA report to Telegram"""
     logger.info("Fetching SGA Report...")
     
     report = fetch_sga_report()
@@ -447,13 +448,10 @@ def send_sga_report():
         send_telegram("<b>⚠️ Solar Report</b>\n\nFailed to fetch SGA report from NOAA")
         return
     
-    # Clean report: remove extra spaces
     clean_report = re.sub(r' +', ' ', report)
     
-    # Send full report as preformatted text
     msg = f"<b>🌞 Solar Geophysical Activity Report</b>\n\n<pre>{clean_report}</pre>"
     
-    # Telegram has message length limit (4096 chars)
     if len(msg) > 4096:
         header = "<b>🌞 Solar Geophysical Activity Report (part 1)</b>\n\n"
         first_part = clean_report[:3500]
@@ -468,9 +466,8 @@ def send_sga_report():
     logger.info("SGA Report sent")
 
 
-# ========== WWV REPORT (every 6 hours) ==========
+# ========== WWV REPORT ==========
 def fetch_wwv_report():
-    """Fetch WWV geophysical alert message"""
     url = "https://services.swpc.noaa.gov/text/wwv.txt"
     try:
         response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
@@ -482,51 +479,35 @@ def fetch_wwv_report():
 
 
 def parse_wwv_report(report_text):
-    """Parse WWV report and extract key data"""
     if not report_text:
         return None
     
     result = {}
     
-    # Extract Solar flux (SFI)
     sfi_match = re.search(r'Solar flux\s+(\d+)', report_text)
     if sfi_match:
         result['sfi'] = sfi_match.group(1)
     
-    # Extract A-index
     a_match = re.search(r'A-index\s+(\d+)', report_text)
     if a_match:
         result['a_index'] = a_match.group(1)
     
-    # Extract K-index
     k_match = re.search(r'K-index at \d+ UTC on \d+ [A-Za-z]+ was (\d+\.?\d*)', report_text)
     if k_match:
         result['k_index'] = k_match.group(1)
     
-    # Extract observation/prediction message
     obs_match = re.search(r'No space weather storms were observed for the past 24 hours\.', report_text)
     if obs_match:
         result['observation'] = "No space weather storms observed for the past 24 hours."
-    else:
-        # Try to find any observation message
-        obs_alt = re.search(r'([A-Z][^.]+\.[^.]+\.[^.]+?(?:storms|quiet|active)[^.]*\.)', report_text, re.IGNORECASE)
-        if obs_alt:
-            result['observation'] = obs_alt.group(1).strip()
     
     pred_match = re.search(r'No space weather storms are predicted for the next 24 hours\.', report_text)
     if pred_match:
         result['prediction'] = "No space weather storms predicted for the next 24 hours."
-    else:
-        # Try to find any prediction message
-        pred_alt = re.search(r'are predicted for the next 24 hours[^.]*\.', report_text, re.IGNORECASE)
-        if pred_alt:
-            result['prediction'] = pred_alt.group(0).strip()
     
     return result
 
 
 def send_wwv_report():
-    """Fetch and send WWV report to Telegram"""
     logger.info("Fetching WWV Report...")
     
     report = fetch_wwv_report()
@@ -539,7 +520,6 @@ def send_wwv_report():
         send_telegram("<b>⚠️ WWV Alert</b>\n\nFailed to parse WWV report")
         return
     
-    # Build compact message
     msg_parts = []
     
     if parsed.get('sfi') or parsed.get('a_index') or parsed.get('k_index'):
@@ -562,7 +542,7 @@ def send_wwv_report():
     logger.info("WWV Report sent")
 
 
-# ========== TELNET CLIENT ==========
+# ========== TELNET CLIENT (no logging) ==========
 def telnet_monitor():
     global tracked_callsigns
     
@@ -601,7 +581,7 @@ def telnet_monitor():
                                     
                                     # Check exact match
                                     if target in tracked_callsigns:
-                                        logger.info(f"MATCH: {target}")
+                                        logger.info(f"✅ MATCH: {target}")
                                         clean_raw = re.sub(r'\s+', ' ', raw)
                                         msg = f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>"
                                         send_telegram(msg)
@@ -609,7 +589,7 @@ def telnet_monitor():
                                         # Check without suffix
                                         base = target.split('/')[0]
                                         if base in tracked_callsigns:
-                                            logger.info(f"MATCH (base): {base}")
+                                            logger.info(f"✅ MATCH (base): {base}")
                                             clean_raw = re.sub(r'\s+', ' ', raw)
                                             msg = f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>"
                                             send_telegram(msg)
@@ -631,17 +611,12 @@ def telnet_monitor():
 def run_scheduler():
     schedule.clear()
     
-    # DX-World news
     schedule.every().day.at(f"{PARSING_HOUR:02d}:{PARSING_MINUTE:02d}").do(send_new_news)
-    
-    # SGA report daily at 22:10 UTC
     schedule.every().day.at(f"{SGA_HOUR:02d}:{SGA_MINUTE:02d}").do(send_sga_report)
     
-    # WWV report every 6 hours
     for wwv in WWV_SCHEDULES:
         schedule.every().day.at(f"{wwv['hour']:02d}:{wwv['minute']:02d}").do(send_wwv_report)
     
-    # 425 Calendar on Sunday
     getattr(schedule.every(), CALENDAR_PARSING_DAY).at(f"{CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d}").do(update_callsigns)
     
     logger.info("=" * 50)
@@ -665,13 +640,13 @@ def run_scheduler():
 
 
 def test_bot():
-    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGA Report: 22:10 UTC\n⚡ WWV Report: every 6 hours (00:10, 06:10, 12:10, 18:10 UTC)\n🔍 DX Cluster active")
+    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGA Report: 22:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 DX Cluster active")
 
 
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v10.4")
+    print("DX-World Telegram Bot v10.6")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
     print(f"DX-World: {PARSING_HOUR:02d}:{PARSING_MINUTE:02d} UTC")
@@ -697,11 +672,9 @@ if __name__ == "__main__":
     print("\nSending DX-World news...")
     send_all_news()
     
-    # Send SGA report on startup
     print("\nSending SGA Report on startup...")
     send_sga_report()
     
-    # Send WWV report on startup
     print("\nSending WWV Report on startup...")
     send_wwv_report()
     
