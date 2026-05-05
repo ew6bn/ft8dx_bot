@@ -27,9 +27,7 @@ if not BOT_TOKEN:
     sys.exit(1)
 
 CHAT_ID = "@ft8dx"
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# List of User-Agents for rotation
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -82,13 +80,9 @@ def send_telegram(text):
             "disable_web_page_preview": False
         }
         response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            return True
-        else:
-            logger.error(f"Telegram error: {response.text}")
-            return False
+        return response.status_code == 200
     except Exception as e:
-        logger.error(f"Telegram exception: {e}")
+        logger.error(f"Telegram error: {e}")
         return False
 
 
@@ -98,13 +92,9 @@ def send_telegram_photo(photo_data, caption):
         files = {"photo": ("image.jpg", photo_data, "image/jpeg")}
         data = {"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"}
         response = requests.post(url, files=files, data=data, timeout=30)
-        if response.status_code == 200:
-            return True
-        else:
-            logger.error(f"Photo error: {response.text}")
-            return False
+        return response.status_code == 200
     except Exception as e:
-        logger.error(f"Photo exception: {e}")
+        logger.error(f"Photo error: {e}")
         return False
 
 
@@ -145,19 +135,16 @@ def download_image(image_url):
         if response.status_code == 200 and 'image' in response.headers.get('content-type', ''):
             return response.content
     except Exception as e:
-        logger.error(f"Image download error: {e}")
+        logger.error(f"Image error: {e}")
     return None
 
 
 # ========== DX-World NEWS ==========
 def parse_dx_world():
-    """Parse main page of dx-world.net with anti-blocking headers"""
     url = "https://www.dx-world.net/"
     
-    # Use random User-Agent for each request
     current_user_agent = random.choice(USER_AGENTS)
     
-    # Enhanced headers to mimic real browser
     headers = {
         "User-Agent": current_user_agent,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -176,13 +163,9 @@ def parse_dx_world():
     news_dict = {}
     
     try:
-        logger.info(f"Parsing {url} with User-Agent: {current_user_agent[:50]}...")
-        
-        # Use session with cookies
+        logger.info(f"Parsing {url}")
         session = requests.Session()
         session.headers.update(headers)
-        
-        # First get main page to set cookies
         response = session.get(url, timeout=15)
         response.raise_for_status()
         
@@ -193,7 +176,7 @@ def parse_dx_world():
             articles = soup.find_all("div", class_=re.compile(r"(post|entry|news-item)", re.I))
         
         if not articles:
-            logger.warning("No articles found on page")
+            logger.warning("No articles found")
             return []
         
         logger.info(f"Found {len(articles)} articles")
@@ -260,21 +243,11 @@ def parse_dx_world():
                 logger.info(f"Found: {title[:50]}...")
                 
             except Exception as e:
-                logger.error(f"Error processing article: {e}")
+                logger.error(f"Error: {e}")
                 continue
         
         return list(news_dict.values())
         
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 403:
-            logger.error("HTTP 403 - Access denied. Site may be blocking bots.")
-            logger.info("Suggestions:")
-            logger.info("1. Wait a few minutes before retrying")
-            logger.info("2. Check if site is accessible from browser")
-            logger.info("3. Site may have temporary issues")
-        else:
-            logger.error(f"HTTP error: {e}")
-        return []
     except Exception as e:
         logger.error(f"Parsing error: {e}")
         return []
@@ -405,9 +378,9 @@ EUROPEAN_PREFIXES = {
     'ON', 'OO', 'OP', 'OQ', 'OR', 'OS', 'OT', '5P',
     # Denmark
     'OU', 'OV', 'OW', 'OX', 'OY', 'OZ',
-    # Netherlands (Holland) - European prefixes only
+    # Netherlands
     'PA', 'PB', 'PC', 'PD', 'PE', 'PF', 'PG', 'PH', 'PI',
-    # Russia (excluding RI - Antarctic/Arctic stations)
+    # Russia (RI excluded - Antarctic/Arctic stations)
     'R', 'RA', 'RB', 'RC', 'RD', 'RE', 'RF', 'RG', 'RH', 'RJ', 'RK', 'RL', 'RM', 'RN', 'RO', 'RP', 'RQ', 'RR', 'RS', 'RT', 'RU', 'RV', 'RW', 'RX', 'RY', 'RZ',
     'UA', 'UB', 'UC', 'UD', 'UE', 'UF', 'UG', 'UH', 'UI',
     # Sweden
@@ -428,7 +401,7 @@ EUROPEAN_PREFIXES = {
     '9A',
     # Malta
     '9H',
-    # Germany (complete list D-series)
+    # Germany
     'DA', 'DB', 'DC', 'DD', 'DE', 'DF', 'DG', 'DH', 'DI', 'DJ', 'DK', 'DL', 'DM', 'DN', 'DO', 'DP', 'DQ', 'DR', 'DS', 'DT', 'DU', 'DV', 'DW', 'DX', 'DY', 'DZ',
     # Monaco
     '3A',
@@ -442,13 +415,14 @@ EUROPEAN_PREFIXES = {
     'T7',
     # Iceland
     'TF',
-    # Corsica (France)
+    # Corsica
     'TK',
     # Albania
     'ZA',
     # North Macedonia
     'Z3',
 }
+
 
 def is_european_callsign(callsign):
     """Check if a callsign is European based on its prefix"""
@@ -457,15 +431,26 @@ def is_european_callsign(callsign):
     
     callsign_upper = callsign.upper()
     
-    # Remove suffix after / for checking (e.g., FO/F6BCW -> FO)
+    # Take prefix BEFORE slash if present (e.g., FO/F6BCW -> FO, 3X/YB3GIH -> 3X)
     base = callsign_upper.split('/')[0]
     
-    # Check against European prefixes
-    for prefix in EUROPEAN_PREFIXES:
-        if base.startswith(prefix):
+    # RI prefix is for Arctic/Antarctic stations - NOT European
+    if base.startswith('RI'):
+        return False
+    
+    # Extract the prefix (letters before the first digit)
+    prefix_match = re.match(r'^([A-Z0-9]+?)[0-9]', base)
+    if prefix_match:
+        prefix = prefix_match.group(1)
+    else:
+        prefix = base
+    
+    # Check if prefix matches any European prefix (exact match, not startswith)
+    for euro_prefix in EUROPEAN_PREFIXES:
+        if prefix == euro_prefix:
             return True
     
-    # Also check 2-letter prefixes with numbers (e.g., 2E, 2I, 2J, 2M, 2W for UK)
+    # UK 2-letter prefixes (2E, 2I, 2J, 2M, 2W)
     if len(base) >= 2 and base[0] == '2' and base[1] in 'EIJMW':
         return True
     
@@ -503,45 +488,77 @@ def extract_callsigns_from_calendar():
         return set()
     
     callsigns = set()
-    excluded_european = set()
+    
+    # Words that are NOT callsigns
+    exclude_words = {
+        'QRV', 'QSL', 'CW', 'SSB', 'FT8', 'RTTY', 'LOTW', 'EQSL', 'OQRS',
+        'VIA', 'BUREAU', 'DIRECT', 'CLUB', 'LOG', 'QRP', 'PWR', 'WATT',
+        'ANT', 'DIPOLE', 'YAGI', 'VERTICAL', 'BEAM', 'HF', 'VHF', 'UHF',
+        'SAT', 'DIGITAL', 'PHONE', 'MODE', 'BAND', 'METER', 'WATTS',
+        'CQ', 'DX', 'IOTA', 'WWFF', 'SOTA', 'POTA', 'QTH', 'UTC',
+        'DE', 'TU', 'TNX', '73', '88', 'TEST', 'CONTEST', 'F/H', 'MSHV',
+        'TILL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER',
+        'NOVEMBER', 'DECEMBER', 'FEBRUARY', 'MARCH', 'APRIL'
+    }
     
     for row in table.find_all('tr')[1:]:
         cells = row.find_all('td')
         if len(cells) >= 2:
             operation_html = str(cells[1])
             
-            if '<br' in operation_html:
-                first_line = operation_html.split('<br')[0]
+            # Extract first line - look for bold text first
+            bold_text = re.search(r'<b>(.*?)</b>', operation_html)
+            if bold_text:
+                first_line = bold_text.group(1)
             else:
-                first_line = operation_html.split('\n')[0]
+                if '<br' in operation_html:
+                    first_line = operation_html.split('<br')[0]
+                else:
+                    first_line = operation_html.split('\n')[0]
             
             first_line = re.sub(r'<[^>]+>', '', first_line).strip()
             
-            if ':' in first_line:
-                first_line = first_line.split(':', 1)[0]
-            
-            # Skip ranges (CALL1-CALL2)
-            if re.search(r'[A-Z]{1,2}[0-9][A-Z0-9]{1,5}-[A-Z]{1,2}[0-9][A-Z0-9]{1,5}', first_line):
+            if ':' not in first_line:
                 continue
             
-            first_line = first_line.replace(' and ', ', ')
-            first_line = first_line.replace('(', ',').replace(')', '')
+            before_colon = first_line.split(':', 1)[0]
             
-            parts = [p.strip() for p in first_line.split(',')]
+            # Skip ranges (CALL1-CALL2)
+            if '-' in before_colon and re.search(r'[A-Z0-9]{2,}-[A-Z0-9]{2,}', before_colon):
+                continue
+            
+            # Clean up separators
+            before_colon = before_colon.replace(' and ', ', ')
+            before_colon = before_colon.replace('(', ',').replace(')', '')
+            
+            # Split by comma and by space
+            parts = []
+            for p in before_colon.split(','):
+                for subp in p.split():
+                    if subp.strip():
+                        parts.append(subp.strip())
             
             for part in parts:
                 if not part:
                     continue
-                # Match callsign pattern
-                if re.match(r'^[A-Z0-9]{1,2}[0-9][A-Z0-9/]{1,10}$', part):
-                    # Check if European - exclude
-                    if is_european_callsign(part):
-                        excluded_european.add(part)
-                    else:
-                        callsigns.add(part)
-    
-    if excluded_european:
-        logger.info(f"Excluded {len(excluded_european)} European callsigns")
+                
+                # Skip obvious non-callsigns
+                if part.upper() in exclude_words:
+                    continue
+                
+                # Remove trailing punctuation
+                part_clean = part.rstrip('.,;:!?')
+                
+                # Must contain a digit
+                if not re.search(r'[0-9]', part_clean):
+                    continue
+                
+                # Length check
+                if not (3 <= len(part_clean) <= 15):
+                    continue
+                
+                if not is_european_callsign(part_clean):
+                    callsigns.add(part_clean)
     
     return callsigns
 
@@ -561,15 +578,12 @@ def update_callsigns():
         for cs in callsigns:
             f.write(f"{cs}\n")
     
-    logger.info(f"Saved {len(callsigns)} non-European callsigns to {CALLSIGNS_FILE}")
+    logger.info(f"Saved {len(callsigns)} non-European callsigns")
     tracked_callsigns = set(callsigns)
     
     if callsigns:
         callsigns_str = ", ".join(callsigns)
-        msg = f"<b>📋 425 DX News Calendar</b>\n\n<b>Total (Non-European):</b> {len(callsigns)} callsigns\n\n<b>Tracking:</b>\n<code>{callsigns_str}</code>"
-        send_telegram(msg)
-    else:
-        send_telegram("<b>📋 425 DX News Calendar</b>\n\n⚠️ No non-European callsigns found")
+        send_telegram(f"<b>📋 425 DX News Calendar</b>\n\nTotal: {len(callsigns)} callsigns\n\n<code>{callsigns_str}</code>")
 
 
 def load_callsigns():
@@ -583,7 +597,7 @@ def load_callsigns():
                     if line and not line.startswith('#'):
                         callsigns.add(line.upper())
                 tracked_callsigns = callsigns
-                logger.info(f"Loaded {len(callsigns)} non-European callsigns for tracking")
+                logger.info(f"Loaded {len(callsigns)} callsigns")
         except Exception as e:
             logger.error(f"Load error: {e}")
 
@@ -592,12 +606,11 @@ def load_callsigns():
 def fetch_sga_report():
     url = "https://services.swpc.noaa.gov/text/sgarf.txt"
     try:
-        headers = {"User-Agent": random.choice(USER_AGENTS)}
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=15)
         response.raise_for_status()
         return response.text
     except Exception as e:
-        logger.error(f"SGA report error: {e}")
+        logger.error(f"SGA error: {e}")
         return None
 
 
@@ -606,37 +619,30 @@ def send_sga_report():
     
     report = fetch_sga_report()
     if not report:
-        send_telegram("<b>⚠️ Solar Report</b>\n\nFailed to fetch SGA report from NOAA")
+        send_telegram("<b>⚠️ Solar Report</b>\n\nFailed to fetch")
         return
     
     clean_report = re.sub(r' +', ' ', report)
-    
     msg = f"<b>🌞 Solar Geophysical Activity Report</b>\n\n<pre>{clean_report}</pre>"
     
     if len(msg) > 4096:
-        header = "<b>🌞 Solar Geophysical Activity Report (part 1)</b>\n\n"
         first_part = clean_report[:3500]
-        send_telegram(header + f"<pre>{first_part}</pre>")
-        
-        second_part = clean_report[3500:]
-        if second_part:
-            send_telegram("<b>🌞 Solar Geophysical Activity Report (part 2)</b>\n\n" + f"<pre>{second_part}</pre>")
+        send_telegram(f"<b>🌞 Solar Report (part 1)</b>\n\n<pre>{first_part}</pre>")
+        if len(clean_report) > 3500:
+            send_telegram(f"<b>🌞 Solar Report (part 2)</b>\n\n<pre>{clean_report[3500:]}</pre>")
     else:
         send_telegram(msg)
-    
-    logger.info("SGA Report sent")
 
 
 # ========== WWV REPORT ==========
 def fetch_wwv_report():
     url = "https://services.swpc.noaa.gov/text/wwv.txt"
     try:
-        headers = {"User-Agent": random.choice(USER_AGENTS)}
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=15)
         response.raise_for_status()
         return response.text
     except Exception as e:
-        logger.error(f"WWV report error: {e}")
+        logger.error(f"WWV error: {e}")
         return None
 
 
@@ -660,11 +666,11 @@ def parse_wwv_report(report_text):
     
     obs_match = re.search(r'No space weather storms were observed for the past 24 hours\.', report_text)
     if obs_match:
-        result['observation'] = "No space weather storms observed for the past 24 hours."
+        result['observation'] = "No storms observed past 24h"
     
     pred_match = re.search(r'No space weather storms are predicted for the next 24 hours\.', report_text)
     if pred_match:
-        result['prediction'] = "No space weather storms predicted for the next 24 hours."
+        result['prediction'] = "No storms predicted next 24h"
     
     return result
 
@@ -674,21 +680,18 @@ def send_wwv_report():
     
     report = fetch_wwv_report()
     if not report:
-        send_telegram("<b>⚠️ WWV Alert</b>\n\nFailed to fetch WWV report from NOAA")
+        send_telegram("<b>⚠️ WWV Alert</b>\n\nFailed to fetch")
         return
     
     parsed = parse_wwv_report(report)
     if not parsed:
-        send_telegram("<b>⚠️ WWV Alert</b>\n\nFailed to parse WWV report")
+        send_telegram("<b>⚠️ WWV Alert</b>\n\nFailed to parse")
         return
     
     msg_parts = []
     
     if parsed.get('sfi') or parsed.get('a_index') or parsed.get('k_index'):
-        sfi = parsed.get('sfi', '?')
-        a_idx = parsed.get('a_index', '?')
-        k_idx = parsed.get('k_index', '?')
-        msg_parts.append(f"<b>⚡ WWV:</b> SFI={sfi} A={a_idx} K={k_idx}")
+        msg_parts.append(f"<b>⚡ WWV:</b> SFI={parsed.get('sfi', '?')} A={parsed.get('a_index', '?')} K={parsed.get('k_index', '?')}")
     
     if parsed.get('observation'):
         msg_parts.append(parsed['observation'])
@@ -699,9 +702,7 @@ def send_wwv_report():
     if not msg_parts:
         msg_parts.append("No data available")
     
-    message = "\n".join(msg_parts)
-    send_telegram(message)
-    logger.info("WWV Report sent")
+    send_telegram("\n".join(msg_parts))
 
 
 # ========== TELNET CLIENT ==========
@@ -736,25 +737,20 @@ def telnet_monitor():
                         for line in lines[:-1]:
                             raw = line.strip()
                             if raw and raw.startswith('DX de'):
-                                # Extract target callsign (after frequency)
                                 match = re.search(r'DX de \S+:\s+[\d.]+\s+([A-Z0-9/]+)', raw)
                                 if match:
                                     target = match.group(1).upper()
                                     
-                                    # Check exact match
                                     if target in tracked_callsigns:
-                                        logger.info(f"✅ MATCH: {target}")
+                                        logger.info(f"MATCH: {target}")
                                         clean_raw = re.sub(r'\s+', ' ', raw)
-                                        msg = f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>"
-                                        send_telegram(msg)
+                                        send_telegram(f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>")
                                     else:
-                                        # Check without suffix
                                         base = target.split('/')[0]
                                         if base in tracked_callsigns:
-                                            logger.info(f"✅ MATCH (base): {base}")
+                                            logger.info(f"MATCH (base): {base}")
                                             clean_raw = re.sub(r'\s+', ' ', raw)
-                                            msg = f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>"
-                                            send_telegram(msg)
+                                            send_telegram(f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>")
                                         
                 except socket.timeout:
                     pass
@@ -765,7 +761,6 @@ def telnet_monitor():
                 
         except Exception as e:
             logger.error(f"Telnet error: {e}")
-            logger.info("Reconnecting in 30 seconds...")
             time.sleep(30)
 
 
@@ -785,9 +780,8 @@ def run_scheduler():
     logger.info(f"Scheduler started at UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"DX-World news: daily at {PARSING_HOUR:02d}:{PARSING_MINUTE:02d} UTC")
     logger.info(f"SGA Report: daily at {SGA_HOUR:02d}:{SGA_MINUTE:02d} UTC")
-    wwv_times = ", ".join([f"{w['hour']:02d}:{w['minute']:02d} UTC" for w in WWV_SCHEDULES])
-    logger.info(f"WWV Report: every 6 hours at {wwv_times}")
-    logger.info(f"425 Calendar: Sunday at {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC (Non-European only)")
+    logger.info(f"WWV Report: every 6 hours")
+    logger.info(f"425 Calendar: Sunday at {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
     logger.info("=" * 50)
     
     while True:
@@ -802,19 +796,19 @@ def run_scheduler():
 
 
 def test_bot():
-    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC (Non-European only)\n🌞 SGA Report: 22:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 DX Cluster active")
+    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGA Report: 22:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 DX Cluster active")
 
 
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v11.2")
+    print("DX-World Telegram Bot v12.0")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
     print(f"DX-World: {PARSING_HOUR:02d}:{PARSING_MINUTE:02d} UTC")
     print(f"SGA Report: {SGA_HOUR:02d}:{SGA_MINUTE:02d} UTC")
-    print(f"WWV Report: every 6 hours at 00:10, 06:10, 12:10, 18:10 UTC")
-    print(f"425 Calendar: Sunday {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC (Non-European only)")
+    print(f"WWV Report: every 6 hours")
+    print(f"425 Calendar: Sunday {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
     print(f"Telnet: {TELNET_HOST}:{TELNET_PORT}")
     print("=" * 60)
     
@@ -834,10 +828,10 @@ if __name__ == "__main__":
     print("\nSending DX-World news...")
     send_all_news()
     
-    print("\nSending SGA Report on startup...")
+    print("\nSending SGA Report...")
     send_sga_report()
     
-    print("\nSending WWV Report on startup...")
+    print("\nSending WWV Report...")
     send_wwv_report()
     
     print("\nStarting Telnet monitor...")
