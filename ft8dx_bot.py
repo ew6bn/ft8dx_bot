@@ -18,6 +18,7 @@ import json
 from urllib.parse import urljoin
 import socket
 import threading
+import random
 
 # ========== SETTINGS ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -26,7 +27,15 @@ if not BOT_TOKEN:
     sys.exit(1)
 
 CHAT_ID = "@ft8dx"
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# List of User-Agents for rotation
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+]
 
 PARSING_HOUR = 6
 PARSING_MINUTE = 55
@@ -131,7 +140,7 @@ def download_image(image_url):
     if not image_url:
         return None
     try:
-        headers = {"User-Agent": USER_AGENT}
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
         response = requests.get(image_url, headers=headers, timeout=10)
         if response.status_code == 200 and 'image' in response.headers.get('content-type', ''):
             return response.content
@@ -142,21 +151,38 @@ def download_image(image_url):
 
 # ========== DX-World NEWS ==========
 def parse_dx_world():
+    """Parse main page of dx-world.net with anti-blocking headers"""
     url = "https://www.dx-world.net/"
+    
+    # Use random User-Agent for each request
+    current_user_agent = random.choice(USER_AGENTS)
+    
+    # Enhanced headers to mimic real browser
     headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
+        "User-Agent": current_user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+        "Referer": "https://www.google.com/",
     }
     
     news_dict = {}
     
     try:
-        logger.info(f"Parsing {url}")
+        logger.info(f"Parsing {url} with User-Agent: {current_user_agent[:50]}...")
+        
+        # Use session with cookies
         session = requests.Session()
         session.headers.update(headers)
+        
+        # First get main page to set cookies
         response = session.get(url, timeout=15)
         response.raise_for_status()
         
@@ -167,7 +193,7 @@ def parse_dx_world():
             articles = soup.find_all("div", class_=re.compile(r"(post|entry|news-item)", re.I))
         
         if not articles:
-            logger.warning("No articles found")
+            logger.warning("No articles found on page")
             return []
         
         logger.info(f"Found {len(articles)} articles")
@@ -234,11 +260,21 @@ def parse_dx_world():
                 logger.info(f"Found: {title[:50]}...")
                 
             except Exception as e:
-                logger.error(f"Error: {e}")
+                logger.error(f"Error processing article: {e}")
                 continue
         
         return list(news_dict.values())
         
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 403:
+            logger.error("HTTP 403 - Access denied. Site may be blocking bots.")
+            logger.info("Suggestions:")
+            logger.info("1. Wait a few minutes before retrying")
+            logger.info("2. Check if site is accessible from browser")
+            logger.info("3. Site may have temporary issues")
+        else:
+            logger.error(f"HTTP error: {e}")
+        return []
     except Exception as e:
         logger.error(f"Parsing error: {e}")
         return []
@@ -325,11 +361,123 @@ def send_new_news():
     save_sent_news(new_sent)
 
 
+# ========== EUROPEAN PREFIXES TO EXCLUDE ==========
+EUROPEAN_PREFIXES = {
+    # Portugal
+    'CQ', 'CR', 'CS', 'CT', 'CU',
+    # Spain
+    'EA', 'EB', 'EC', 'ED', 'EE', 'EF', 'EG', 'EH', 'AM', 'AN', 'AO',
+    # Ireland
+    'EI', 'EJ',
+    # Moldova
+    'ER',
+    # Estonia
+    'ES',
+    # Belarus
+    'EU', 'EV', 'EW',
+    # France
+    'F', 'TM',
+    # United Kingdom
+    'G', 'M', '2E', '2I', '2J', '2M', '2W', 'GX', 'GB', 'GU', 'GJ', 'GW', 'GM', 'MM', 'MX', 'MU', 'MJ', 'MW',
+    # Hungary
+    'HA', 'HG',
+    # Switzerland
+    'HB', 'HE',
+    # Italy
+    'I', 'II', 'IZ', 'IK', 'IW', 'IG', 'IS', 'IT', 'IH', 'IN', 'IL', 'IA',
+    # Norway
+    'LA', 'LB', 'LC', 'LD', 'LE', 'LF', 'LG', 'LH', 'LI', 'LJ', 'LK', 'LL', 'LM', 'LN',
+    # Luxembourg
+    'LX',
+    # Lithuania
+    'LY',
+    # Bulgaria
+    'LZ',
+    # Austria
+    'OE',
+    # Finland
+    'OH', 'OF', 'OG', 'OI',
+    # Czech Republic
+    'OK', 'OL',
+    # Slovakia
+    'OM',
+    # Belgium
+    'ON', 'OO', 'OP', 'OQ', 'OR', 'OS', 'OT', '5P',
+    # Denmark
+    'OU', 'OV', 'OW', 'OX', 'OY', 'OZ',
+    # Netherlands (Holland) - European prefixes only
+    'PA', 'PB', 'PC', 'PD', 'PE', 'PF', 'PG', 'PH', 'PI',
+    # Russia (excluding RI - Antarctic/Arctic stations)
+    'R', 'RA', 'RB', 'RC', 'RD', 'RE', 'RF', 'RG', 'RH', 'RJ', 'RK', 'RL', 'RM', 'RN', 'RO', 'RP', 'RQ', 'RR', 'RS', 'RT', 'RU', 'RV', 'RW', 'RX', 'RY', 'RZ',
+    'UA', 'UB', 'UC', 'UD', 'UE', 'UF', 'UG', 'UH', 'UI',
+    # Sweden
+    'SA', 'SB', 'SC', 'SD', 'SE', 'SF', 'SG', 'SH', 'SI', 'SJ', 'SK', 'SL', 'SM',
+    # Poland
+    'SN', 'SO', 'SP', 'SQ', 'SR', '3Z', 'HF',
+    # Greece
+    'SV', 'SW', 'SX', 'SY', 'SZ',
+    # Turkey
+    'TA', 'TB', 'TC',
+    # Ukraine
+    'UR', 'US', 'UT', 'UU', 'UV', 'UW', 'UX', 'UY', 'UZ',
+    # Romania
+    'YO', 'YP', 'YQ', 'YR',
+    # Serbia
+    'YT', 'YU', '4N', '4O',
+    # Croatia
+    '9A',
+    # Malta
+    '9H',
+    # Germany (complete list D-series)
+    'DA', 'DB', 'DC', 'DD', 'DE', 'DF', 'DG', 'DH', 'DI', 'DJ', 'DK', 'DL', 'DM', 'DN', 'DO', 'DP', 'DQ', 'DR', 'DS', 'DT', 'DU', 'DV', 'DW', 'DX', 'DY', 'DZ',
+    # Monaco
+    '3A',
+    # Azerbaijan
+    '4J', '4K',
+    # Cyprus
+    '5B', 'C4', 'P3',
+    # Slovenia
+    'S5',
+    # San Marino
+    'T7',
+    # Iceland
+    'TF',
+    # Corsica (France)
+    'TK',
+    # Albania
+    'ZA',
+    # North Macedonia
+    'Z3',
+}
+
+def is_european_callsign(callsign):
+    """Check if a callsign is European based on its prefix"""
+    if not callsign:
+        return True
+    
+    callsign_upper = callsign.upper()
+    
+    # Remove suffix after / for checking (e.g., FO/F6BCW -> FO)
+    base = callsign_upper.split('/')[0]
+    
+    # Check against European prefixes
+    for prefix in EUROPEAN_PREFIXES:
+        if base.startswith(prefix):
+            return True
+    
+    # Also check 2-letter prefixes with numbers (e.g., 2E, 2I, 2J, 2M, 2W for UK)
+    if len(base) >= 2 and base[0] == '2' and base[1] in 'EIJMW':
+        return True
+    
+    return False
+
+
 # ========== 425 DX NEWS CALENDAR ==========
 def fetch_calendar():
     url = "https://www.425dxn.org/index.php?op=wcal"
     try:
-        response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -355,6 +503,7 @@ def extract_callsigns_from_calendar():
         return set()
     
     callsigns = set()
+    excluded_european = set()
     
     for row in table.find_all('tr')[1:]:
         cells = row.find_all('td')
@@ -371,6 +520,7 @@ def extract_callsigns_from_calendar():
             if ':' in first_line:
                 first_line = first_line.split(':', 1)[0]
             
+            # Skip ranges (CALL1-CALL2)
             if re.search(r'[A-Z]{1,2}[0-9][A-Z0-9]{1,5}-[A-Z]{1,2}[0-9][A-Z0-9]{1,5}', first_line):
                 continue
             
@@ -382,8 +532,16 @@ def extract_callsigns_from_calendar():
             for part in parts:
                 if not part:
                     continue
+                # Match callsign pattern
                 if re.match(r'^[A-Z0-9]{1,2}[0-9][A-Z0-9/]{1,10}$', part):
-                    callsigns.add(part)
+                    # Check if European - exclude
+                    if is_european_callsign(part):
+                        excluded_european.add(part)
+                    else:
+                        callsigns.add(part)
+    
+    if excluded_european:
+        logger.info(f"Excluded {len(excluded_european)} European callsigns")
     
     return callsigns
 
@@ -397,19 +555,21 @@ def update_callsigns():
     callsigns = sorted(list(callsigns))
     
     with open(CALLSIGNS_FILE, 'w', encoding='utf-8') as f:
-        f.write(f"# 425 DX News Calendar Callsigns\n")
+        f.write(f"# 425 DX News Calendar Callsigns (Non-European only)\n")
         f.write(f"# Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"# Total: {len(callsigns)}\n\n")
         for cs in callsigns:
             f.write(f"{cs}\n")
     
-    logger.info(f"Saved {len(callsigns)} callsigns to {CALLSIGNS_FILE}")
+    logger.info(f"Saved {len(callsigns)} non-European callsigns to {CALLSIGNS_FILE}")
     tracked_callsigns = set(callsigns)
     
     if callsigns:
         callsigns_str = ", ".join(callsigns)
-        msg = f"<b>📋 425 DX News Calendar</b>\n\n<b>Total:</b> {len(callsigns)} callsigns\n\n<b>Tracking:</b>\n<code>{callsigns_str}</code>"
+        msg = f"<b>📋 425 DX News Calendar</b>\n\n<b>Total (Non-European):</b> {len(callsigns)} callsigns\n\n<b>Tracking:</b>\n<code>{callsigns_str}</code>"
         send_telegram(msg)
+    else:
+        send_telegram("<b>📋 425 DX News Calendar</b>\n\n⚠️ No non-European callsigns found")
 
 
 def load_callsigns():
@@ -423,7 +583,7 @@ def load_callsigns():
                     if line and not line.startswith('#'):
                         callsigns.add(line.upper())
                 tracked_callsigns = callsigns
-                logger.info(f"Loaded {len(callsigns)} callsigns for tracking")
+                logger.info(f"Loaded {len(callsigns)} non-European callsigns for tracking")
         except Exception as e:
             logger.error(f"Load error: {e}")
 
@@ -432,7 +592,8 @@ def load_callsigns():
 def fetch_sga_report():
     url = "https://services.swpc.noaa.gov/text/sgarf.txt"
     try:
-        response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -470,7 +631,8 @@ def send_sga_report():
 def fetch_wwv_report():
     url = "https://services.swpc.noaa.gov/text/wwv.txt"
     try:
-        response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -542,7 +704,7 @@ def send_wwv_report():
     logger.info("WWV Report sent")
 
 
-# ========== TELNET CLIENT (no logging) ==========
+# ========== TELNET CLIENT ==========
 def telnet_monitor():
     global tracked_callsigns
     
@@ -625,7 +787,7 @@ def run_scheduler():
     logger.info(f"SGA Report: daily at {SGA_HOUR:02d}:{SGA_MINUTE:02d} UTC")
     wwv_times = ", ".join([f"{w['hour']:02d}:{w['minute']:02d} UTC" for w in WWV_SCHEDULES])
     logger.info(f"WWV Report: every 6 hours at {wwv_times}")
-    logger.info(f"425 Calendar: Sunday at {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
+    logger.info(f"425 Calendar: Sunday at {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC (Non-European only)")
     logger.info("=" * 50)
     
     while True:
@@ -640,19 +802,19 @@ def run_scheduler():
 
 
 def test_bot():
-    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGA Report: 22:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 DX Cluster active")
+    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC (Non-European only)\n🌞 SGA Report: 22:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 DX Cluster active")
 
 
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v10.6")
+    print("DX-World Telegram Bot v11.2")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
     print(f"DX-World: {PARSING_HOUR:02d}:{PARSING_MINUTE:02d} UTC")
     print(f"SGA Report: {SGA_HOUR:02d}:{SGA_MINUTE:02d} UTC")
     print(f"WWV Report: every 6 hours at 00:10, 06:10, 12:10, 18:10 UTC")
-    print(f"425 Calendar: Sunday {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
+    print(f"425 Calendar: Sunday {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC (Non-European only)")
     print(f"Telnet: {TELNET_HOST}:{TELNET_PORT}")
     print("=" * 60)
     
