@@ -147,6 +147,7 @@ def download_image(image_url):
 def is_spot_duplicate(callsign, frequency):
     """
     Check if we've already sent this spot in the last 15 minutes
+    Only called for callsigns that are in tracking list
     """
     global sent_spots_cache
     
@@ -390,7 +391,7 @@ EUROPEAN_PREFIXES = {
     # Switzerland
     'HB', 'HE',
     # Italy
-    'I', 'II', 'IZ', 'IK', 'IW', 'IG', 'IS', 'IT', 'IH', 'IN', 'IL', 'IA',
+    'I', 'II', 'IZ', 'IK', 'IW', 'IG', 'IS', 'IT', 'IH', 'IN', 'IL', 'IA', 'IV',
     # Norway
     'LA', 'LB', 'LC', 'LD', 'LE', 'LF', 'LG', 'LH', 'LI', 'LJ', 'LK', 'LL', 'LM', 'LN',
     # Luxembourg
@@ -776,22 +777,18 @@ def telnet_monitor():
                                 if match:
                                     frequency = match.group(1)
                                     target = match.group(2).upper()
+                                    base = target.split('/')[0]
                                     
-                                    # Check duplicate (same callsign + frequency within 15 min)
-                                    if is_spot_duplicate(target, frequency):
-                                        continue
-                                    
-                                    # Check exact match
-                                    if target in tracked_callsigns:
+                                    # Check if callsign is in tracking list
+                                    if target in tracked_callsigns or base in tracked_callsigns:
+                                        # Only check duplicate for matching spots
+                                        if is_spot_duplicate(target, frequency):
+                                            continue
+                                        
                                         logger.info(f"✅ MATCH: {target}")
                                         clean_raw = re.sub(r'\s+', ' ', raw)
                                         send_telegram(f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>")
-                                    else:
-                                        base = target.split('/')[0]
-                                        if base in tracked_callsigns:
-                                            logger.info(f"✅ MATCH (base): {base}")
-                                            clean_raw = re.sub(r'\s+', ' ', raw)
-                                            send_telegram(f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>")
+                                    # Ignore other spots completely (no logging)
                                         
                 except socket.timeout:
                     pass
@@ -844,7 +841,7 @@ def test_bot():
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v12.1")
+    print("DX-World Telegram Bot v12.2")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
     print(f"DX-World: {PARSING_HOUR:02d}:{PARSING_MINUTE:02d} UTC")
