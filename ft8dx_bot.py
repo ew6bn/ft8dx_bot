@@ -61,6 +61,10 @@ TELNET_USER = "EW6BN-2"
 SENT_NEWS_FILE = "sent_news.json"
 CALLSIGNS_FILE = "callsigns_425dxn.txt"
 
+# Cache for sent spots to avoid duplicates
+sent_spots_cache = {}
+SPOT_CACHE_TIMEOUT = 15 * 60  # 15 minutes in seconds
+
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -137,6 +141,35 @@ def download_image(image_url):
     except Exception as e:
         logger.error(f"Image error: {e}")
     return None
+
+
+# ========== SPOT DUPLICATE FILTER ==========
+def is_spot_duplicate(callsign, frequency):
+    """
+    Check if we've already sent this spot in the last 15 minutes
+    """
+    global sent_spots_cache
+    
+    key = f"{callsign}|{frequency}"
+    current_time = time.time()
+    
+    # Clean expired entries
+    expired_keys = []
+    for k, timestamp in sent_spots_cache.items():
+        if current_time - timestamp > SPOT_CACHE_TIMEOUT:
+            expired_keys.append(k)
+    for k in expired_keys:
+        del sent_spots_cache[k]
+    
+    # Check if key exists
+    if key in sent_spots_cache:
+        elapsed = int(current_time - sent_spots_cache[key])
+        logger.info(f"🔄 Duplicate spot filtered: {callsign} on {frequency} (last sent {elapsed} sec ago)")
+        return True
+    
+    # Store new spot
+    sent_spots_cache[key] = current_time
+    return False
 
 
 # ========== DX-World NEWS ==========
@@ -337,7 +370,7 @@ def send_new_news():
 # ========== EUROPEAN PREFIXES TO EXCLUDE ==========
 EUROPEAN_PREFIXES = {
     # Portugal
-    'CQ', 'CR', 'CS', 'CT', 'CU',
+    'CQ', 'CR', 'CS', 'CT', 'CU', 'AG',
     # Spain
     'EA', 'EB', 'EC', 'ED', 'EE', 'EF', 'EG', 'EH', 'AM', 'AN', 'AO',
     # Ireland
@@ -380,8 +413,9 @@ EUROPEAN_PREFIXES = {
     'OU', 'OV', 'OW', 'OX', 'OY', 'OZ',
     # Netherlands
     'PA', 'PB', 'PC', 'PD', 'PE', 'PF', 'PG', 'PH', 'PI',
-    # Russia (RI excluded - Antarctic/Arctic stations)
-    'R', 'RA', 'RB', 'RC', 'RD', 'RE', 'RF', 'RG', 'RH', 'RJ', 'RK', 'RL', 'RM', 'RN', 'RO', 'RP', 'RQ', 'RR', 'RS', 'RT', 'RU', 'RV', 'RW', 'RX', 'RY', 'RZ',
+    # Russia
+    'R', 'RA', 'RB', 'RC', 'RD', 'RE', 'RF', 'RG', 'RH', 'RI', 'RJ', 'RK', 
+    'RL', 'RM', 'RN', 'RO', 'RP', 'RQ', 'RR', 'RS', 'RT', 'RU', 'RV', 'RW', 'RX', 'RY', 'RZ',
     'UA', 'UB', 'UC', 'UD', 'UE', 'UF', 'UG', 'UH', 'UI',
     # Sweden
     'SA', 'SB', 'SC', 'SD', 'SE', 'SF', 'SG', 'SH', 'SI', 'SJ', 'SK', 'SL', 'SM',
@@ -431,21 +465,21 @@ def is_european_callsign(callsign):
     
     callsign_upper = callsign.upper()
     
-    # Take prefix BEFORE slash if present (e.g., FO/F6BCW -> FO, 3X/YB3GIH -> 3X)
+    # Take prefix BEFORE slash if present
     base = callsign_upper.split('/')[0]
     
     # RI prefix is for Arctic/Antarctic stations - NOT European
     if base.startswith('RI'):
         return False
     
-    # Extract the prefix (letters before the first digit)
+    # Extract the prefix (letters/digits before the first digit)
     prefix_match = re.match(r'^([A-Z0-9]+?)[0-9]', base)
     if prefix_match:
         prefix = prefix_match.group(1)
     else:
         prefix = base
     
-    # Check if prefix matches any European prefix (exact match, not startswith)
+    # Check if prefix matches any European prefix
     for euro_prefix in EUROPEAN_PREFIXES:
         if prefix == euro_prefix:
             return True
@@ -737,18 +771,25 @@ def telnet_monitor():
                         for line in lines[:-1]:
                             raw = line.strip()
                             if raw and raw.startswith('DX de'):
-                                match = re.search(r'DX de \S+:\s+[\d.]+\s+([A-Z0-9/]+)', raw)
+                                # Extract frequency and callsign
+                                match = re.search(r'DX de \S+:\s+([\d.]+)\s+([A-Z0-9/]+)', raw)
                                 if match:
-                                    target = match.group(1).upper()
+                                    frequency = match.group(1)
+                                    target = match.group(2).upper()
                                     
+                                    # Check duplicate (same callsign + frequency within 15 min)
+                                    if is_spot_duplicate(target, frequency):
+                                        continue
+                                    
+                                    # Check exact match
                                     if target in tracked_callsigns:
-                                        logger.info(f"MATCH: {target}")
+                                        logger.info(f"✅ MATCH: {target}")
                                         clean_raw = re.sub(r'\s+', ' ', raw)
                                         send_telegram(f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>")
                                     else:
                                         base = target.split('/')[0]
                                         if base in tracked_callsigns:
-                                            logger.info(f"MATCH (base): {base}")
+                                            logger.info(f"✅ MATCH (base): {base}")
                                             clean_raw = re.sub(r'\s+', ' ', raw)
                                             send_telegram(f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>")
                                         
@@ -761,6 +802,7 @@ def telnet_monitor():
                 
         except Exception as e:
             logger.error(f"Telnet error: {e}")
+            logger.info("Reconnecting in 30 seconds...")
             time.sleep(30)
 
 
@@ -796,13 +838,13 @@ def run_scheduler():
 
 
 def test_bot():
-    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGA Report: 22:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 DX Cluster active")
+    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGA Report: 22:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 DX Cluster active (15 min duplicate filter)")
 
 
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v12.0")
+    print("DX-World Telegram Bot v12.1")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
     print(f"DX-World: {PARSING_HOUR:02d}:{PARSING_MINUTE:02d} UTC")
@@ -810,6 +852,7 @@ if __name__ == "__main__":
     print(f"WWV Report: every 6 hours")
     print(f"425 Calendar: Sunday {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
     print(f"Telnet: {TELNET_HOST}:{TELNET_PORT}")
+    print(f"Duplicate filter: 15 minutes (same callsign + frequency)")
     print("=" * 60)
     
     if not BOT_TOKEN:
@@ -834,7 +877,7 @@ if __name__ == "__main__":
     print("\nSending WWV Report...")
     send_wwv_report()
     
-    print("\nStarting Telnet monitor...")
+    print("\nStarting Telnet monitor with duplicate filter...")
     t = threading.Thread(target=telnet_monitor, daemon=True)
     t.start()
     
