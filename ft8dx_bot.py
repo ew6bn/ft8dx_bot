@@ -44,8 +44,9 @@ CALENDAR_PARSING_DAY = 'sunday'
 CALENDAR_PARSING_HOUR = 1
 CALENDAR_PARSING_MINUTE = 0
 
-SGA_HOUR = 22
-SGA_MINUTE = 10
+# SGAS Report schedule (daily 05:10 UTC)
+SGAS_HOUR = 5
+SGAS_MINUTE = 10
 
 WWV_SCHEDULES = [
     {"hour": 0, "minute": 10},
@@ -637,36 +638,48 @@ def load_callsigns():
             logger.error(f"Load error: {e}")
 
 
-# ========== SGA REPORT ==========
-def fetch_sga_report():
-    url = "https://services.swpc.noaa.gov/text/sgarf.txt"
+# ========== SGAS REPORT ==========
+def fetch_sgas_report():
+    """Fetch Solar and Geophysical Activity Summary from NOAA"""
+    url = "https://services.swpc.noaa.gov/text/sgas.txt"
     try:
-        response = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=15)
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         return response.text
     except Exception as e:
-        logger.error(f"SGA error: {e}")
+        logger.error(f"SGAS report error: {e}")
         return None
 
 
-def send_sga_report():
-    logger.info("Fetching SGA Report...")
+def send_sgas_report():
+    """Send full SGAS report to Telegram"""
+    logger.info("Fetching SGAS Report...")
     
-    report = fetch_sga_report()
+    report = fetch_sgas_report()
     if not report:
-        send_telegram("<b>⚠️ Solar Report</b>\n\nFailed to fetch")
+        send_telegram("<b>⚠️ Solar Report</b>\n\nFailed to fetch SGAS report from NOAA")
         return
     
+    # Clean report: remove extra spaces
     clean_report = re.sub(r' +', ' ', report)
-    msg = f"<b>🌞 Solar Geophysical Activity Report</b>\n\n<pre>{clean_report}</pre>"
     
+    # Send full report as preformatted text
+    msg = f"<b>🌞 Solar and Geophysical Activity Summary</b>\n\n<pre>{clean_report}</pre>"
+    
+    # Telegram has message length limit (4096 chars)
     if len(msg) > 4096:
+        header = "<b>🌞 SGAS Report (part 1)</b>\n\n"
         first_part = clean_report[:3500]
-        send_telegram(f"<b>🌞 Solar Report (part 1)</b>\n\n<pre>{first_part}</pre>")
-        if len(clean_report) > 3500:
-            send_telegram(f"<b>🌞 Solar Report (part 2)</b>\n\n<pre>{clean_report[3500:]}</pre>")
+        send_telegram(header + f"<pre>{first_part}</pre>")
+        
+        second_part = clean_report[3500:]
+        if second_part:
+            send_telegram("<b>🌞 SGAS Report (part 2)</b>\n\n" + f"<pre>{second_part}</pre>")
     else:
         send_telegram(msg)
+    
+    logger.info("SGAS Report sent")
 
 
 # ========== WWV REPORT ==========
@@ -808,7 +821,7 @@ def run_scheduler():
     schedule.clear()
     
     schedule.every().day.at(f"{PARSING_HOUR:02d}:{PARSING_MINUTE:02d}").do(send_new_news)
-    schedule.every().day.at(f"{SGA_HOUR:02d}:{SGA_MINUTE:02d}").do(send_sga_report)
+    schedule.every().day.at(f"{SGAS_HOUR:02d}:{SGAS_MINUTE:02d}").do(send_sgas_report)
     
     for wwv in WWV_SCHEDULES:
         schedule.every().day.at(f"{wwv['hour']:02d}:{wwv['minute']:02d}").do(send_wwv_report)
@@ -818,7 +831,7 @@ def run_scheduler():
     logger.info("=" * 50)
     logger.info(f"Scheduler started at UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"DX-World news: daily at {PARSING_HOUR:02d}:{PARSING_MINUTE:02d} UTC")
-    logger.info(f"SGA Report: daily at {SGA_HOUR:02d}:{SGA_MINUTE:02d} UTC")
+    logger.info(f"SGAS Report: daily at {SGAS_HOUR:02d}:{SGAS_MINUTE:02d} UTC")
     logger.info(f"WWV Report: every 6 hours")
     logger.info(f"425 Calendar: Sunday at {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
     logger.info("=" * 50)
@@ -835,17 +848,17 @@ def run_scheduler():
 
 
 def test_bot():
-    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGA Report: 22:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 DX Cluster active (15 min duplicate filter)")
+    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGAS Report: 05:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 DX Cluster active (15 min duplicate filter)")
 
 
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v12.2")
+    print("DX-World Telegram Bot v12.3")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
     print(f"DX-World: {PARSING_HOUR:02d}:{PARSING_MINUTE:02d} UTC")
-    print(f"SGA Report: {SGA_HOUR:02d}:{SGA_MINUTE:02d} UTC")
+    print(f"SGAS Report: {SGAS_HOUR:02d}:{SGAS_MINUTE:02d} UTC")
     print(f"WWV Report: every 6 hours")
     print(f"425 Calendar: Sunday {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
     print(f"Telnet: {TELNET_HOST}:{TELNET_PORT}")
@@ -868,8 +881,8 @@ if __name__ == "__main__":
     print("\nSending DX-World news...")
     send_all_news()
     
-    print("\nSending SGA Report...")
-    send_sga_report()
+    print("\nSending SGAS Report...")
+    send_sgas_report()
     
     print("\nSending WWV Report...")
     send_wwv_report()
