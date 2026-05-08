@@ -62,10 +62,6 @@ TELNET_USER = "EW6BN-2"
 SENT_NEWS_FILE = "sent_news.json"
 CALLSIGNS_FILE = "callsigns_425dxn.txt"
 
-# Cache for sent spots to avoid duplicates
-sent_spots_cache = {}
-SPOT_CACHE_TIMEOUT = 15 * 60  # 15 minutes in seconds
-
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -73,6 +69,49 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 tracked_callsigns = set()
+
+
+# ========== SPOT DUPLICATE FILTER ==========
+class SpotFilter:
+    """Filter for duplicate spots within timeout period"""
+    
+    def __init__(self, timeout_seconds=15 * 60):
+        self.timeout = timeout_seconds
+        self.cache = {}  # key -> timestamp
+    
+    def is_duplicate(self, callsign, frequency):
+        """
+        Check if spot is duplicate (same callsign and frequency within timeout)
+        Returns True if duplicate, False if new
+        """
+        key = f"{callsign.upper()}|{frequency}"
+        current_time = time.time()
+        
+        # Clean expired entries (older than timeout)
+        expired = [k for k, ts in self.cache.items() if current_time - ts > self.timeout]
+        for k in expired:
+            del self.cache[k]
+        
+        # Check if key exists
+        if key in self.cache:
+            elapsed = int(current_time - self.cache[key])
+            logger.info(f"🔄 Duplicate spot filtered: {callsign} on {frequency} (last sent {elapsed} sec ago)")
+            return True
+        
+        # Store new spot
+        self.cache[key] = current_time
+        return False
+    
+    def clear_expired(self):
+        """Manually clear expired entries"""
+        current_time = time.time()
+        expired = [k for k, ts in self.cache.items() if current_time - ts > self.timeout]
+        for k in expired:
+            del self.cache[k]
+
+
+# Create global spot filter instance
+spot_filter = SpotFilter(15 * 60)
 
 
 def send_telegram(text):
@@ -142,36 +181,6 @@ def download_image(image_url):
     except Exception as e:
         logger.error(f"Image error: {e}")
     return None
-
-
-# ========== SPOT DUPLICATE FILTER ==========
-def is_spot_duplicate(callsign, frequency):
-    """
-    Check if we've already sent this spot in the last 15 minutes
-    Only called for callsigns that are in tracking list
-    """
-    global sent_spots_cache
-    
-    key = f"{callsign}|{frequency}"
-    current_time = time.time()
-    
-    # Clean expired entries
-    expired_keys = []
-    for k, timestamp in sent_spots_cache.items():
-        if current_time - timestamp > SPOT_CACHE_TIMEOUT:
-            expired_keys.append(k)
-    for k in expired_keys:
-        del sent_spots_cache[k]
-    
-    # Check if key exists
-    if key in sent_spots_cache:
-        elapsed = int(current_time - sent_spots_cache[key])
-        logger.info(f"🔄 Duplicate spot filtered: {callsign} on {frequency} (last sent {elapsed} sec ago)")
-        return True
-    
-    # Store new spot
-    sent_spots_cache[key] = current_time
-    return False
 
 
 # ========== DX-World NEWS ==========
@@ -756,6 +765,7 @@ def send_wwv_report():
 # ========== TELNET CLIENT ==========
 def telnet_monitor():
     global tracked_callsigns
+    global spot_filter
     
     while True:
         try:
@@ -772,6 +782,7 @@ def telnet_monitor():
             sock.send(b"set/dx/filter Band=HF\r\n")
             
             buffer = ""
+            spot_count = 0
             
             while True:
                 try:
@@ -785,6 +796,8 @@ def telnet_monitor():
                         for line in lines[:-1]:
                             raw = line.strip()
                             if raw and raw.startswith('DX de'):
+                                spot_count += 1
+                                
                                 # Extract frequency and callsign
                                 match = re.search(r'DX de \S+:\s+([\d.]+)\s+([A-Z0-9/]+)', raw)
                                 if match:
@@ -792,16 +805,20 @@ def telnet_monitor():
                                     target = match.group(2).upper()
                                     base = target.split('/')[0]
                                     
+                                    # Log every 100th spot for debugging (optional)
+                                    if spot_count % 100 == 0:
+                                        logger.info(f"Spot #{spot_count}: {target} on {frequency}")
+                                    
                                     # Check if callsign is in tracking list
                                     if target in tracked_callsigns or base in tracked_callsigns:
-                                        # Only check duplicate for matching spots
-                                        if is_spot_duplicate(target, frequency):
+                                        # Check duplicate
+                                        if spot_filter.is_duplicate(target, frequency):
                                             continue
                                         
-                                        logger.info(f"✅ MATCH: {target}")
+                                        logger.info(f"✅ MATCH: {target} on {frequency}")
                                         clean_raw = re.sub(r'\s+', ' ', raw)
                                         send_telegram(f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>")
-                                    # Ignore other spots completely (no logging)
+                                    # Ignore other spots completely
                                         
                 except socket.timeout:
                     pass
