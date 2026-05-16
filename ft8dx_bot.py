@@ -54,8 +54,12 @@ WWV_SCHEDULES = [
     {"hour": 18, "minute": 10}
 ]
 
-TELNET_HOST = "dxc.pi4cc.nl"
-TELNET_PORT = 8000
+# Telnet servers (primary and fallback)
+TELNET_SERVERS = [
+    {"host": "dxc.pi4cc.nl", "port": 8000, "name": "Primary (Pi4CC)"},
+    {"host": "ve7cc.net", "port": 23, "name": "Fallback (VE7CC)"},
+]
+
 TELNET_USER = "EW6BN-2"
 
 SENT_NEWS_FILE = "sent_news.json"
@@ -80,7 +84,6 @@ class SpotFilter:
         key = f"{callsign.upper()}|{frequency}"
         current_time = time.time()
         
-        # Clean expired
         expired = [k for k, ts in self.cache.items() if current_time - ts > self.timeout]
         for k in expired:
             del self.cache[k]
@@ -353,20 +356,16 @@ def is_european_callsign(callsign):
     
     base = callsign.upper().split('/')[0]
     
-    # RI - Arctic/Antarctic (not European)
     if base.startswith('RI'):
         return False
     
-    # Extract prefix (letters before first digit)
     match = re.match(r'^([A-Z0-9]+?)[0-9]', base)
     prefix = match.group(1) if match else base
     
-    # Check against European prefixes
     for euro in EUROPEAN_PREFIXES:
         if prefix == euro:
             return True
     
-    # UK 2-letter prefixes
     if len(base) >= 2 and base[0] == '2' and base[1] in 'EIJMW':
         return True
     
@@ -412,7 +411,6 @@ def extract_callsigns_from_calendar():
     for row in table.find_all('tr')[1:]:
         cells = row.find_all('td')
         if len(cells) >= 2:
-            # Get first line (bold or before <br>)
             op_html = str(cells[1])
             bold = re.search(r'<b>(.*?)</b>', op_html)
             if bold:
@@ -426,13 +424,11 @@ def extract_callsigns_from_calendar():
             
             before_colon = first_line.split(':', 1)[0]
             
-            # Skip ranges
             if '-' in before_colon and re.search(r'[A-Z0-9]{2,}-[A-Z0-9]{2,}', before_colon):
                 continue
             
             before_colon = before_colon.replace(' and ', ', ').replace('(', ',').replace(')', '')
             
-            # Split
             parts = []
             for p in before_colon.split(','):
                 for sub in p.split():
@@ -524,32 +520,65 @@ def send_wwv_report():
         send_telegram("<b>⚠️ WWV Alert</b>\n\nFailed to fetch")
         return
     
-    # Parse
+    lines = report.strip().split('\n')
+    
+    # Parse SFI, A-index, K-index
     sfi = re.search(r'Solar flux\s+(\d+)', report)
     a_idx = re.search(r'A-index\s+(\d+)', report)
     k_idx = re.search(r'K-index at \d+ UTC on \d+ [A-Za-z]+ was (\d+\.?\d*)', report)
-    obs = "No storms observed past 24h" if "No space weather storms were observed" in report else ""
-    pred = "No storms predicted next 24h" if "No space weather storms are predicted" in report else ""
     
+    # Build message with indices
     msg = f"<b>⚡ WWV:</b> SFI={sfi.group(1) if sfi else '?'} A={a_idx.group(1) if a_idx else '?'} K={k_idx.group(1) if k_idx else '?'}"
-    if obs:
-        msg += f"\n{obs}"
-    if pred:
-        msg += f"\n{pred}"
+    
+    # Find the line with K-index and get everything after it
+    k_index_line_index = -1
+    for i, line in enumerate(lines):
+        if 'K-index' in line:
+            k_index_line_index = i
+            break
+    
+    if k_index_line_index >= 0:
+        # Get all lines after the K-index line
+        remaining_lines = lines[k_index_line_index + 1:]
+        if remaining_lines:
+            # Clean up and add to message
+            remaining_text = '\n'.join(remaining_lines).strip()
+            if remaining_text:
+                msg += f"\n\n{remaining_text}"
     
     send_telegram(msg)
 
 
-# ========== TELNET CLIENT ==========
+# ========== TELNET CLIENT (with multiple servers) ==========
 def telnet_monitor():
     global tracked_callsigns
+    reconnect_delay = 5
+    server_index = 0
     
     while True:
+        server = TELNET_SERVERS[server_index]
+        host = server["host"]
+        port = server["port"]
+        name = server["name"]
+        
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(30)
-            sock.connect((TELNET_HOST, TELNET_PORT))
-            logger.info(f"Connected to {TELNET_HOST}:{TELNET_PORT}")
+            
+            # TCP keepalive
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+            except:
+                pass
+            
+            logger.info(f"Connecting to {name}: {host}:{port}")
+            sock.connect((host, port))
+            logger.info(f"Connected to {name}: {host}:{port}")
+            reconnect_delay = 5
+            server_index = 0  # Reset to primary on successful connection
             
             sock.recv(4096)
             sock.send(f"{TELNET_USER}\r\n".encode('ascii'))
@@ -558,12 +587,14 @@ def telnet_monitor():
             sock.send(b"set/dx/filter Band=HF\r\n")
             
             buffer = ""
+            last_activity = time.time()
             
             while True:
                 try:
-                    sock.settimeout(1)
+                    sock.settimeout(30)
                     data = sock.recv(65536).decode('ascii', errors='ignore')
                     if data:
+                        last_activity = time.time()
                         buffer += data
                         lines = buffer.split('\r\n')
                         buffer = lines[-1]
@@ -580,21 +611,27 @@ def telnet_monitor():
                                     if target in tracked_callsigns or base in tracked_callsigns:
                                         if spot_filter.is_duplicate(target, freq):
                                             continue
-                                        
                                         logger.info(f"MATCH: {target} on {freq}")
                                         clean_raw = re.sub(r'\s+', ' ', raw)
                                         send_telegram(f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>")
                                         
                 except socket.timeout:
-                    pass
+                    if time.time() - last_activity > 60:
+                        logger.warning(f"No data for 60 seconds from {name}, switching server...")
+                        break
+                    continue
                 except Exception as e:
-                    logger.error(f"Read error: {e}")
+                    logger.error(f"Read error from {name}: {e}")
                     break
                 time.sleep(2)
                 
         except Exception as e:
-            logger.error(f"Telnet error: {e}")
-            time.sleep(30)
+            logger.error(f"Connection error to {name} ({host}:{port}): {e}")
+            server_index = (server_index + 1) % len(TELNET_SERVERS)
+            next_server = TELNET_SERVERS[server_index]["name"]
+            logger.info(f"Switching to {next_server} in {reconnect_delay} seconds...")
+            time.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, 60)
 
 
 # ========== SCHEDULER ==========
@@ -623,19 +660,22 @@ def run_scheduler():
 
 
 def test_bot():
-    return send_telegram("<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGAS Report: 05:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 DX Cluster active (15 min filter)")
+    servers = ", ".join([f"{s['name']} ({s['host']}:{s['port']})" for s in TELNET_SERVERS])
+    return send_telegram(f"<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGAS Report: 05:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 Telnet servers: {servers}\n🔄 Auto-reconnect + failover enabled")
 
 
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v12.4")
+    print("DX-World Telegram Bot v12.8")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
     print(f"SGAS Report: {SGAS_HOUR:02d}:{SGAS_MINUTE:02d} UTC")
-    print(f"WWV Report: every 6 hours")
+    print(f"WWV Report: every 6 hours (full report after K-index)")
     print(f"425 Calendar: Sunday {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
-    print(f"Telnet: {TELNET_HOST}:{TELNET_PORT}")
+    print(f"Telnet servers:")
+    for s in TELNET_SERVERS:
+        print(f"  - {s['name']}: {s['host']}:{s['port']}")
     print("=" * 60)
     
     if not BOT_TOKEN:
@@ -651,7 +691,7 @@ if __name__ == "__main__":
     send_sgas_report()
     send_wwv_report()
     
-    print("\nStarting Telnet monitor...")
+    print("\nStarting Telnet monitor with multiple servers...")
     threading.Thread(target=telnet_monitor, daemon=True).start()
     
     print("\nBot started. Press Ctrl+C to stop.\n")
