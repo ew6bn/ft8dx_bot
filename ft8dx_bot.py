@@ -54,10 +54,11 @@ WWV_SCHEDULES = [
     {"hour": 18, "minute": 10}
 ]
 
-# Telnet servers (primary and fallback)
+# Telnet servers (primary and fallbacks)
 TELNET_SERVERS = [
-    {"host": "dxc.pi4cc.nl", "port": 8000, "name": "Primary (Pi4CC)"},
-    {"host": "ve7cc.net", "port": 23, "name": "Fallback (VE7CC)"},
+    {"host": "ea4ure.com", "port": 7300, "name": "Primary (EA4URE)"},
+    {"host": "ve7cc.net", "port": 23, "name": "Fallback 1 (VE7CC)"},
+    {"host": "s50clx.si", "port": 41112, "name": "Fallback 2 (S50CLX)"},
 ]
 
 TELNET_USER = "EW6BN-2"
@@ -76,26 +77,52 @@ tracked_callsigns = set()
 
 # ========== SPOT DUPLICATE FILTER ==========
 class SpotFilter:
-    def __init__(self, timeout_seconds=15 * 60):
+    def __init__(self, timeout_seconds=15 * 60, freq_tolerance=1.0, delete_after_seconds=60 * 60):
         self.timeout = timeout_seconds
+        self.freq_tolerance = freq_tolerance
+        self.delete_after = delete_after_seconds
         self.cache = {}
     
     def is_duplicate(self, callsign, frequency):
-        key = f"{callsign.upper()}|{frequency}"
+        key = callsign.upper()
         current_time = time.time()
+        freq = float(frequency)
         
-        expired = [k for k, ts in self.cache.items() if current_time - ts > self.timeout]
+        expired = [k for k, v in self.cache.items() if current_time - v["timestamp"] > self.timeout]
         for k in expired:
             del self.cache[k]
         
         if key in self.cache:
-            return True
+            cached_freq = self.cache[key]["frequency"]
+            if abs(freq - cached_freq) <= self.freq_tolerance:
+                return True
         
-        self.cache[key] = current_time
         return False
+    
+    def add_spot(self, callsign, frequency, chat_id, message_id):
+        key = callsign.upper()
+        self.cache[key] = {
+            "timestamp": time.time(),
+            "frequency": float(frequency),
+            "chat_id": chat_id,
+            "message_id": message_id
+        }
+    
+    def schedule_deletion(self, chat_id, message_id, delay_seconds):
+        def delete():
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
+                payload = {"chat_id": chat_id, "message_id": message_id}
+                requests.post(url, json=payload, timeout=10)
+            except Exception:
+                pass
+        
+        timer = threading.Timer(delay_seconds, delete)
+        timer.daemon = True
+        timer.start()
 
 
-spot_filter = SpotFilter(15 * 60)
+spot_filter = SpotFilter(15 * 60, 1.0, 60 * 60)
 
 
 def send_telegram(text):
@@ -104,9 +131,21 @@ def send_telegram(text):
         payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
         response = requests.post(url, json=payload, timeout=10)
         return response.status_code == 200
-    except Exception as e:
-        logger.error(f"Telegram error: {e}")
+    except Exception:
         return False
+
+
+def send_telegram_with_reply(text):
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("result", {}).get("message_id")
+        return None
+    except Exception:
+        return None
 
 
 def send_telegram_photo(photo_data, caption):
@@ -116,8 +155,7 @@ def send_telegram_photo(photo_data, caption):
         data = {"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"}
         response = requests.post(url, files=files, data=data, timeout=30)
         return response.status_code == 200
-    except Exception as e:
-        logger.error(f"Photo error: {e}")
+    except Exception:
         return False
 
 
@@ -150,9 +188,8 @@ def download_image(image_url):
         response = requests.get(image_url, headers=headers, timeout=10)
         if response.status_code == 200 and 'image' in response.headers.get('content-type', ''):
             return response.content
-    except Exception as e:
-        logger.error(f"Image error: {e}")
-    return None
+    except Exception:
+        return None
 
 
 # ========== DX-World NEWS ==========
@@ -272,8 +309,8 @@ def save_sent_news(sent_ids):
     try:
         with open(SENT_NEWS_FILE, 'w', encoding='utf-8') as f:
             json.dump({'sent_ids': list(sent_ids)}, f)
-    except Exception as e:
-        logger.error(f"Save error: {e}")
+    except Exception:
+        pass
 
 
 def get_news_id(news_item):
@@ -478,8 +515,8 @@ def load_callsigns():
                     if line and not line.startswith('#'):
                         callsigns.add(line.upper())
                 tracked_callsigns = callsigns
-        except Exception as e:
-            logger.error(f"Load error: {e}")
+        except Exception:
+            pass
 
 
 # ========== SGAS REPORT ==========
@@ -522,15 +559,12 @@ def send_wwv_report():
     
     lines = report.strip().split('\n')
     
-    # Parse SFI, A-index, K-index
     sfi = re.search(r'Solar flux\s+(\d+)', report)
     a_idx = re.search(r'A-index\s+(\d+)', report)
     k_idx = re.search(r'K-index at \d+ UTC on \d+ [A-Za-z]+ was (\d+\.?\d*)', report)
     
-    # Build message with indices
     msg = f"<b>⚡ WWV:</b> SFI={sfi.group(1) if sfi else '?'} A={a_idx.group(1) if a_idx else '?'} K={k_idx.group(1) if k_idx else '?'}"
     
-    # Find the line with K-index and get everything after it
     k_index_line_index = -1
     for i, line in enumerate(lines):
         if 'K-index' in line:
@@ -538,10 +572,8 @@ def send_wwv_report():
             break
     
     if k_index_line_index >= 0:
-        # Get all lines after the K-index line
         remaining_lines = lines[k_index_line_index + 1:]
         if remaining_lines:
-            # Clean up and add to message
             remaining_text = '\n'.join(remaining_lines).strip()
             if remaining_text:
                 msg += f"\n\n{remaining_text}"
@@ -549,7 +581,7 @@ def send_wwv_report():
     send_telegram(msg)
 
 
-# ========== TELNET CLIENT (with multiple servers) ==========
+# ========== TELNET CLIENT ==========
 def telnet_monitor():
     global tracked_callsigns
     reconnect_delay = 5
@@ -578,7 +610,7 @@ def telnet_monitor():
             sock.connect((host, port))
             logger.info(f"Connected to {name}: {host}:{port}")
             reconnect_delay = 5
-            server_index = 0  # Reset to primary on successful connection
+            server_index = 0
             
             sock.recv(4096)
             sock.send(f"{TELNET_USER}\r\n".encode('ascii'))
@@ -611,9 +643,15 @@ def telnet_monitor():
                                     if target in tracked_callsigns or base in tracked_callsigns:
                                         if spot_filter.is_duplicate(target, freq):
                                             continue
+                                        
                                         logger.info(f"MATCH: {target} on {freq}")
                                         clean_raw = re.sub(r'\s+', ' ', raw)
-                                        send_telegram(f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>")
+                                        
+                                        msg_text = f"<b>🎯 DX SPOT!</b>\n\n<code>{clean_raw}</code>"
+                                        message_id = send_telegram_with_reply(msg_text)
+                                        if message_id:
+                                            spot_filter.add_spot(target, freq, CHAT_ID, message_id)
+                                            spot_filter.schedule_deletion(CHAT_ID, message_id, 60 * 60)
                                         
                 except socket.timeout:
                     if time.time() - last_activity > 60:
@@ -654,8 +692,7 @@ def run_scheduler():
             time.sleep(60)
         except KeyboardInterrupt:
             break
-        except Exception as e:
-            logger.error(f"Scheduler error: {e}")
+        except Exception:
             time.sleep(60)
 
 
@@ -667,11 +704,11 @@ def test_bot():
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v12.8")
+    print("DX-World Telegram Bot v13.1")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
     print(f"SGAS Report: {SGAS_HOUR:02d}:{SGAS_MINUTE:02d} UTC")
-    print(f"WWV Report: every 6 hours (full report after K-index)")
+    print(f"WWV Report: every 6 hours")
     print(f"425 Calendar: Sunday {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
     print(f"Telnet servers:")
     for s in TELNET_SERVERS:
@@ -691,7 +728,7 @@ if __name__ == "__main__":
     send_sgas_report()
     send_wwv_report()
     
-    print("\nStarting Telnet monitor with multiple servers...")
+    print("\nStarting Telnet monitor...")
     threading.Thread(target=telnet_monitor, daemon=True).start()
     
     print("\nBot started. Press Ctrl+C to stop.\n")
