@@ -56,9 +56,9 @@ WWV_SCHEDULES = [
 
 # Telnet servers (primary and fallbacks)
 TELNET_SERVERS = [
-    {"host": "ea4ure.com", "port": 7300, "name": "Primary (EA4URE)"},
-    {"host": "ve7cc.net", "port": 23, "name": "Fallback 1 (VE7CC)"},
-    {"host": "s50clx.si", "port": 41112, "name": "Fallback 2 (S50CLX)"},
+    {"host": "ve7cc.net", "port": 23, "name": "Primary (VE7CC)"},
+    {"host": "s50clx.si", "port": 41112, "name": "Fallback 1 (S50CLX)"},
+    {"host": "dxc.pi4cc.nl", "port": 8000, "name": "Fallback 2 (Pi4CC)"},
 ]
 
 TELNET_USER = "EW6BN-2"
@@ -586,6 +586,7 @@ def telnet_monitor():
     global tracked_callsigns
     reconnect_delay = 5
     server_index = 0
+    last_spot_time = time.time()
     
     while True:
         server = TELNET_SERVERS[server_index]
@@ -611,6 +612,7 @@ def telnet_monitor():
             logger.info(f"Connected to {name}: {host}:{port}")
             reconnect_delay = 5
             server_index = 0
+            last_spot_time = time.time()
             
             sock.recv(4096)
             sock.send(f"{TELNET_USER}\r\n".encode('ascii'))
@@ -634,6 +636,8 @@ def telnet_monitor():
                         for line in lines[:-1]:
                             raw = line.strip()
                             if raw and raw.startswith('DX de'):
+                                last_spot_time = time.time()
+                                
                                 match = re.search(r'DX de \S+:\s+([\d.]+)\s+([A-Z0-9/]+)', raw)
                                 if match:
                                     freq = match.group(1)
@@ -654,13 +658,19 @@ def telnet_monitor():
                                             spot_filter.schedule_deletion(CHAT_ID, message_id, 60 * 60)
                                         
                 except socket.timeout:
-                    if time.time() - last_activity > 60:
-                        logger.warning(f"No data for 60 seconds from {name}, switching server...")
-                        break
-                    continue
+                    pass
                 except Exception as e:
                     logger.error(f"Read error from {name}: {e}")
                     break
+                
+                if time.time() - last_spot_time > 300:
+                    logger.warning(f"No spots for 300 seconds from {name}, reconnecting...")
+                    break
+                
+                if time.time() - last_activity > 60:
+                    logger.warning(f"No data for 60 seconds from {name}, switching server...")
+                    break
+                
                 time.sleep(2)
                 
         except Exception as e:
@@ -704,7 +714,7 @@ def test_bot():
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v13.1")
+    print("DX-World Telegram Bot v13.3")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
     print(f"SGAS Report: {SGAS_HOUR:02d}:{SGAS_MINUTE:02d} UTC")
