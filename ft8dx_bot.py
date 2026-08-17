@@ -19,6 +19,8 @@ from urllib.parse import urljoin
 import socket
 import threading
 import random
+import ftplib
+from io import BytesIO
 
 # ========== SETTINGS ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -519,44 +521,62 @@ def load_callsigns():
             pass
 
 
+# ========== FTP HELPER ==========
+def fetch_from_ftp(host, filepath, retries=3):
+    """Fetch file from FTP server with retries"""
+    for attempt in range(retries):
+        try:
+            ftp = ftplib.FTP(host)
+            ftp.login()  # anonymous
+            ftp.cwd('/'.join(filepath.split('/')[:-1]) if '/' in filepath else '')
+            filename = filepath.split('/')[-1]
+            bio = BytesIO()
+            ftp.retrbinary(f'RETR {filename}', bio.write)
+            ftp.quit()
+            bio.seek(0)
+            content = bio.read().decode('utf-8')
+            if content and len(content.strip()) > 0:
+                return content
+            logger.warning(f"FTP attempt {attempt+1} returned empty content")
+        except Exception as e:
+            logger.warning(f"FTP attempt {attempt+1} failed: {e}")
+            time.sleep(2)
+    return None
+
+
 # ========== SGAS REPORT ==========
 def send_sgas_report():
-    logger.info("Fetching SGAS Report...")
+    logger.info("Fetching SGAS Report via FTP...")
+    content = fetch_from_ftp('ftp.swpc.noaa.gov', '/pub/latest/SGAS.txt')
     
-    try:
-        url = "https://services.swpc.noaa.gov/text/sgas.txt"
-        response = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=15)
-        response.raise_for_status()
-        report = response.text
-    except Exception as e:
-        logger.error(f"SGAS error: {e}")
-        send_telegram("<b>⚠️ Solar Report</b>\n\nFailed to fetch")
+    if not content:
+        logger.error("SGAS content is empty after all retries")
+        send_telegram("<b>⚠️ Solar Report</b>\n\nSGAS report is empty")
         return
     
-    clean_report = re.sub(r' +', ' ', report)
-    msg = f"<b>🌞 Solar and Geophysical Activity Summary</b>\n\n<pre>{clean_report}</pre>"
+    # Clean up: remove extra spaces, but keep structure
+    report = re.sub(r' +', ' ', content)
     
+    msg = f"<b>🌞 Solar and Geophysical Activity Summary</b>\n\n<pre>{report}</pre>"
     if len(msg) > 4096:
-        send_telegram(f"<b>🌞 SGAS Report (part 1)</b>\n\n<pre>{clean_report[:3500]}</pre>")
-        send_telegram(f"<b>🌞 SGAS Report (part 2)</b>\n\n<pre>{clean_report[3500:]}</pre>")
+        send_telegram(f"<b>🌞 SGAS Report (part 1)</b>\n\n<pre>{report[:3500]}</pre>")
+        if len(report) > 3500:
+            send_telegram(f"<b>🌞 SGAS Report (part 2)</b>\n\n<pre>{report[3500:]}</pre>")
     else:
         send_telegram(msg)
 
 
 # ========== WWV REPORT ==========
 def send_wwv_report():
-    logger.info("Fetching WWV Report...")
+    logger.info("Fetching WWV Report via FTP...")
+    content = fetch_from_ftp('ftp.swpc.noaa.gov', '/pub/latest/wwv.txt')
     
-    try:
-        url = "https://services.swpc.noaa.gov/text/wwv.txt"
-        response = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=15)
-        response.raise_for_status()
-        report = response.text
-    except Exception as e:
-        logger.error(f"WWV error: {e}")
-        send_telegram("<b>⚠️ WWV Alert</b>\n\nFailed to fetch")
+    if not content:
+        logger.error("WWV content is empty after all retries")
+        send_telegram("<b>⚠️ WWV Alert</b>\n\nWWV report is empty")
         return
     
+    report = re.sub(r' +', ' ', content)
     lines = report.strip().split('\n')
     
     sfi = re.search(r'Solar flux\s+(\d+)', report)
@@ -577,6 +597,11 @@ def send_wwv_report():
             remaining_text = '\n'.join(remaining_lines).strip()
             if remaining_text:
                 msg += f"\n\n{remaining_text}"
+    else:
+        if len(lines) > 5:
+            fallback_text = '\n'.join(lines[5:]).strip()
+            if fallback_text:
+                msg += f"\n\n{fallback_text}"
     
     send_telegram(msg)
 
@@ -708,17 +733,17 @@ def run_scheduler():
 
 def test_bot():
     servers = ", ".join([f"{s['name']} ({s['host']}:{s['port']})" for s in TELNET_SERVERS])
-    return send_telegram(f"<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGAS Report: 05:10 UTC\n⚡ WWV Report: every 6 hours\n🔍 Telnet servers: {servers}\n🔄 Auto-reconnect + failover enabled")
+    return send_telegram(f"<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGAS Report: 05:10 UTC (FTP)\n⚡ WWV Report: every 6 hours (FTP)\n🔍 Telnet servers: {servers}\n🔄 Auto-reconnect + failover enabled")
 
 
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v13.3")
+    print("DX-World Telegram Bot v14.5 (FTP optimized)")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
-    print(f"SGAS Report: {SGAS_HOUR:02d}:{SGAS_MINUTE:02d} UTC")
-    print(f"WWV Report: every 6 hours")
+    print(f"SGAS Report: {SGAS_HOUR:02d}:{SGAS_MINUTE:02d} UTC (FTP)")
+    print(f"WWV Report: every 6 hours (FTP)")
     print(f"425 Calendar: Sunday {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
     print(f"Telnet servers:")
     for s in TELNET_SERVERS:
