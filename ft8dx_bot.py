@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 import schedule
 import time
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import re
 import html
 import json
@@ -21,6 +21,7 @@ import threading
 import random
 import ftplib
 from io import BytesIO
+from html2image import Html2Image
 
 # ========== SETTINGS ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -153,7 +154,7 @@ def send_telegram_with_reply(text):
 def send_telegram_photo(photo_data, caption):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-        files = {"photo": ("image.jpg", photo_data, "image/jpeg")}
+        files = {"photo": ("screenshot.png", photo_data, "image/png")}
         data = {"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"}
         response = requests.post(url, files=files, data=data, timeout=30)
         return response.status_code == 200
@@ -521,6 +522,69 @@ def load_callsigns():
             pass
 
 
+# ========== DXPEDITION TIMELINE (скриншот) ==========
+def send_dxpedition_timeline_image():
+    """
+    Делает скриншот страницы календаря и отправляет его в Telegram.
+    """
+    logger.info("Taking screenshot of DXpedition Timeline...")
+    
+    try:
+        # Инициализация Html2Image
+        # Можно настроить размер окна браузера, чтобы захватить всю страницу
+        hti = Html2Image(size=(1200, 2000))  # Ширина 1200px, высота 2000px
+
+        # URL страницы
+        url = "https://www.hamradiotimeline.com/timeline/dxw_timeline_1_1.php"
+        
+        # Делаем скриншот и получаем байты изображения
+        # Используем screenshot_to_bytes для получения данных без сохранения в файл
+        image_bytes = hti.screenshot(url=url, size=(1200, 2000), save_as=None)
+        
+        # Если screenshot_to_bytes не работает, используем сохранение во временный файл
+        if image_bytes is None:
+            # Сохраняем во временный файл
+            screenshot_path = 'timeline_screenshot.png'
+            hti.screenshot(url=url, save_as=screenshot_path)
+            with open(screenshot_path, 'rb') as f:
+                image_bytes = f.read()
+            # Удаляем файл после чтения
+            os.remove(screenshot_path)
+
+        # Отправляем изображение в Telegram
+        caption = "<b>📅 DXpedition Calendar</b>"
+        files = {'photo': ('screenshot.png', BytesIO(image_bytes), 'image/png')}
+        data = {'chat_id': CHAT_ID, 'caption': caption, 'parse_mode': 'HTML'}
+        response = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+            files=files,
+            data=data
+        )
+            
+        if response.status_code == 200:
+            logger.info("Timeline screenshot sent successfully.")
+        else:
+            logger.error(f"Failed to send screenshot: {response.text}")
+            # В случае ошибки отправляем ссылку как запасной вариант
+            send_dxpedition_timeline_link()
+
+    except Exception as e:
+        logger.error(f"Failed to take or send screenshot: {e}")
+        # В случае ошибки отправляем ссылку как запасной вариант
+        send_dxpedition_timeline_link()
+
+
+def send_dxpedition_timeline_link():
+    """Отправляет ссылку на календарь (запасной вариант)"""
+    logger.info("Sending DXpedition Timeline link as fallback...")
+    message = (
+        "<b>📅 DXpedition Calendar</b>\n\n"
+        "View the full calendar online:\n"
+        "🔗 <a href='https://www.hamradiotimeline.com/timeline/dxw_timeline_1_1.php'>hamradiotimeline.com</a>"
+    )
+    send_telegram(message)
+
+
 # ========== FTP HELPER ==========
 def fetch_from_ftp(host, filepath, retries=3):
     """Fetch file from FTP server with retries"""
@@ -554,9 +618,7 @@ def send_sgas_report():
         send_telegram("<b>⚠️ Solar Report</b>\n\nSGAS report is empty")
         return
     
-    # Clean up: remove extra spaces, but keep structure
     report = re.sub(r' +', ' ', content)
-    
     msg = f"<b>🌞 Solar and Geophysical Activity Summary</b>\n\n<pre>{report}</pre>"
     if len(msg) > 4096:
         send_telegram(f"<b>🌞 SGAS Report (part 1)</b>\n\n<pre>{report[:3500]}</pre>")
@@ -719,6 +781,9 @@ def run_scheduler():
     
     getattr(schedule.every(), CALENDAR_PARSING_DAY).at(f"{CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d}").do(update_callsigns)
     
+    # 1-го и 15-го числа в 00:01
+    schedule.every().day.at("00:01").do(check_and_send_timeline)
+    
     logger.info(f"Scheduler started at UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
     
     while True:
@@ -731,20 +796,30 @@ def run_scheduler():
             time.sleep(60)
 
 
+def check_and_send_timeline():
+    """Проверяет, является ли сегодня 1-м или 15-м числом"""
+    now = datetime.now(timezone.utc)
+    day = now.day
+    if day == 1 or day == 15:
+        logger.info(f"Today is {day}th – sending DXpedition Timeline screenshot")
+        send_dxpedition_timeline_image()
+
+
 def test_bot():
     servers = ", ".join([f"{s['name']} ({s['host']}:{s['port']})" for s in TELNET_SERVERS])
-    return send_telegram(f"<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGAS Report: 05:10 UTC (FTP)\n⚡ WWV Report: every 6 hours (FTP)\n🔍 Telnet servers: {servers}\n🔄 Auto-reconnect + failover enabled")
+    return send_telegram(f"<b>🤖 DX-World News Bot</b>\n\n✅ Bot started\n⏰ DX-World: 06:55 UTC\n📅 425 Calendar: Sunday 01:00 UTC\n🌞 SGAS Report: 05:10 UTC (FTP)\n⚡ WWV Report: every 6 hours (FTP)\n📅 DX Timeline: 1st & 15th each month (screenshot)\n🔍 Telnet servers: {servers}\n🔄 Auto-reconnect + failover enabled")
 
 
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("DX-World Telegram Bot v14.5 (FTP optimized)")
+    print("DX-World Telegram Bot v16.0 (screenshot timeline)")
     print("=" * 60)
     print(f"Channel: {CHAT_ID}")
     print(f"SGAS Report: {SGAS_HOUR:02d}:{SGAS_MINUTE:02d} UTC (FTP)")
     print(f"WWV Report: every 6 hours (FTP)")
     print(f"425 Calendar: Sunday {CALENDAR_PARSING_HOUR:02d}:{CALENDAR_PARSING_MINUTE:02d} UTC")
+    print(f"DX Timeline: 1st & 15th each month (screenshot)")
     print(f"Telnet servers:")
     for s in TELNET_SERVERS:
         print(f"  - {s['name']}: {s['host']}:{s['port']}")
@@ -762,6 +837,9 @@ if __name__ == "__main__":
     send_all_news()
     send_sgas_report()
     send_wwv_report()
+    
+    print("\nSending DXpedition Timeline screenshot on first start...")
+    send_dxpedition_timeline_image()
     
     print("\nStarting Telnet monitor...")
     threading.Thread(target=telnet_monitor, daemon=True).start()
